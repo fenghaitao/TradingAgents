@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -376,7 +377,14 @@ class TradingAgentsGraph:
             f"asset={asset_type}",
         ])
 
-    def propagate(self, company_name, trade_date, asset_type: str = "stock"):
+    def propagate(
+        self,
+        company_name,
+        trade_date,
+        asset_type: str = "stock",
+        on_chunk: Callable[[dict], None] | None = None,
+        callbacks: list | None = None,
+    ):
         """Run the trading agents graph for a company on a specific date.
 
         ``asset_type`` selects between the stock pipeline (default) and the
@@ -385,6 +393,15 @@ class TradingAgentsGraph:
         ``checkpoint_enabled`` is set in config, the graph is recompiled with
         a per-ticker SqliteSaver so a crashed run can resume from the last
         successful node on a subsequent invocation with the same ticker+date.
+
+        ``on_chunk`` receives each streamed state delta as the graph runs, and
+        ``callbacks`` are forwarded to the graph config for tool-execution
+        tracking. Together they let a live UI render progress *through* this
+        method instead of driving ``self.graph.stream`` itself — which is the
+        point: everything that makes a run durable (pending-entry resolution,
+        past-context injection, state logging, decision storage, checkpoint
+        lifecycle) lives here, so a caller that bypasses it silently gets none
+        of it.
         """
         self.ticker = company_name
 
@@ -411,7 +428,13 @@ class TradingAgentsGraph:
                 logger.info("Starting fresh for %s on %s", company_name, trade_date)
 
         try:
-            return self._run_graph(company_name, trade_date, asset_type=asset_type)
+            return self._run_graph(
+                company_name,
+                trade_date,
+                asset_type=asset_type,
+                on_chunk=on_chunk,
+                callbacks=callbacks,
+            )
         finally:
             if self._checkpointer_ctx is not None:
                 self._checkpointer_ctx.__exit__(None, None, None)
@@ -433,7 +456,14 @@ class TradingAgentsGraph:
             )
         return write_report_tree(final_state, ticker, save_path)
 
-    def _run_graph(self, company_name, trade_date, asset_type: str = "stock"):
+    def _run_graph(
+        self,
+        company_name,
+        trade_date,
+        asset_type: str = "stock",
+        on_chunk: Callable[[dict], None] | None = None,
+        callbacks: list | None = None,
+    ):
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
         # deterministically resolved instrument identity for all agents.
@@ -446,7 +476,7 @@ class TradingAgentsGraph:
             past_context=past_context,
             instrument_context=instrument_context,
         )
-        args = self.propagator.get_graph_args()
+        args = self.propagator.get_graph_args(callbacks=callbacks)
 
         # Inject thread_id so same ticker+date+graph-shape resumes; a different
         # date or graph shape starts fresh (#1089).
@@ -454,11 +484,19 @@ class TradingAgentsGraph:
             tid = thread_id(company_name, str(trade_date), self._run_signature(asset_type))
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
-        if self.debug:
+        if self.debug or on_chunk is not None:
             trace = []
             last_printed = None
             for chunk in self.graph.stream(init_agent_state, **args):
-                if chunk["messages"]:
+                if on_chunk is not None:
+                    on_chunk(chunk)
+                # An observer owns the terminal, so debug printing must yield to
+                # it: the CLI builds this graph with debug=True and renders into
+                # a Rich Live display, and pretty_print() writing to stdout
+                # underneath it corrupts the frame.
+                # ``.get``: nodes past the trader emit chunks without a messages
+                # key at all, and an observer-driven run must not die on one.
+                if self.debug and on_chunk is None and chunk.get("messages"):
                     msg = chunk["messages"][-1]
                     # Nodes after the trader don't append to messages, so the
                     # same trailing message repeats across chunks. Print it only
@@ -467,7 +505,13 @@ class TradingAgentsGraph:
                     if signature != last_printed:
                         msg.pretty_print()
                         last_printed = signature
-                    trace.append(chunk)
+                # Appended unconditionally. This used to sit inside the messages
+                # check, so debug runs silently dropped any chunk without
+                # messages from the merged state; the CLI's own loop always
+                # appended. Capturing every chunk is what makes the merge below
+                # actually equal graph.invoke(). Nothing downstream reads
+                # ``messages``, so a later empty one overwriting it is harmless.
+                trace.append(chunk)
             # Streamed chunks are per-node deltas. Merge them so the returned
             # state matches what graph.invoke() yields in the non-debug path.
             final_state = {}

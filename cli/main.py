@@ -1110,26 +1110,13 @@ def run_analysis(checkpoint: bool | None = None):
         )
         update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
 
-        # Initialize state and get graph args with callbacks.
-        # Resolve the instrument identity once here so all agents anchor to
-        # the real company (#814); the CLI builds state directly rather than
-        # going through propagate(), so this must happen on the CLI path too.
-        instrument_context = graph.resolve_instrument_context(
-            selections["ticker"], selections["asset_type"]
-        )
-        init_agent_state = graph.propagator.create_initial_state(
-            selections["ticker"],
-            selections["analysis_date"],
-            asset_type=selections["asset_type"],
-            instrument_context=instrument_context,
-        )
-        # Pass callbacks to graph config for tool execution tracking
-        # (LLM tracking is handled separately via LLM constructor)
-        args = graph.propagator.get_graph_args(callbacks=[stats_handler])
-
-        # Stream the analysis
-        trace = []
-        for chunk in graph.graph.stream(init_agent_state, **args):
+        # Render each state delta as the graph runs. The run itself is driven by
+        # propagate() below, not by this function — state setup, instrument
+        # identity (#814), pending-entry resolution, past-context injection,
+        # state logging, decision storage and checkpointing all live there, and
+        # streaming the graph directly here meant the CLI silently got none of
+        # them.
+        def handle_chunk(chunk):
             # Process all messages in chunk, deduplicating by message ID
             for message in chunk.get("messages", []):
                 msg_id = getattr(message, "id", None)
@@ -1229,13 +1216,16 @@ def run_analysis(checkpoint: bool | None = None):
             # Update the display
             update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
-            trace.append(chunk)
-
-        # Streamed chunks are per-node deltas, not full state. Merge them
-        # so every report field populated across the run is present.
-        final_state = {}
-        for chunk in trace:
-            final_state.update(chunk)
+        # propagate() merges the streamed deltas into the full final state, so
+        # the CLI no longer keeps its own trace to reassemble.
+        final_state, _signal = graph.propagate(
+            selections["ticker"],
+            selections["analysis_date"],
+            asset_type=selections["asset_type"],
+            on_chunk=handle_chunk,
+            # Tool-execution tracking; LLM tracking is wired via the LLM constructor.
+            callbacks=[stats_handler],
+        )
 
         # Update all agent statuses to completed
         for agent in message_buffer.agent_status:
