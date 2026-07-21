@@ -16,14 +16,31 @@ class Reflector:
 
         Produces 2-4 sentences of plain prose — compact enough to be re-injected
         into future agent prompts without bloating the context window.
+
+        Deliberately scoped to the *entry*, not the thesis. The outcome window is
+        a handful of trading days while the decision's stated ``time_horizon`` is
+        usually months, so asking "was the directional call correct?" demands a
+        verdict the data cannot support. The prompt instead asks what a few days
+        genuinely show — timing and the immediate catalyst — and forbids scoring
+        the multi-month thesis, which is still open.
+
+        It also states the long-only sign convention: ``_fetch_returns`` computes
+        a long return regardless of rating, so a bearish call that worked shows up
+        as a negative figure and would otherwise read as a failure.
         """
         return (
-            "You are a trading analyst reviewing your own past decision now that the outcome is known.\n"
+            "You are a trading analyst reviewing the near-term outcome of your own past decision.\n"
+            "The observation window is short — days — while the decision's stated time horizon is "
+            "usually far longer. Judge only what this window can actually support.\n\n"
             "Write exactly 2-4 sentences of plain prose (no bullets, no headers, no markdown).\n\n"
             "Cover in order:\n"
-            "1. Was the directional call correct? (cite the alpha figure)\n"
-            "2. Which part of the investment thesis held or failed?\n"
-            "3. One concrete lesson to apply to the next similar analysis.\n\n"
+            "1. Over this window, did the near-term setup confirm or contradict the entry — timing, "
+            "the immediate catalyst, the technical read? Cite the alpha figure.\n"
+            "2. State plainly that the longer-horizon thesis remains open and is not being scored here.\n"
+            "3. One concrete lesson about entry timing or setup to apply to the next similar analysis.\n\n"
+            "Sign convention: returns are measured long-only, whatever the rating. A negative return "
+            "under a bearish rating (Sell, Underweight) means the near-term call was RIGHT, not wrong. "
+            "Read the sign against the rating before judging.\n\n"
             "Be specific and terse. Your output will be stored verbatim in a decision log "
             "and re-read by future analysts, so every word must earn its place."
         )
@@ -34,6 +51,8 @@ class Reflector:
         raw_return: float,
         alpha_return: float,
         benchmark_name: str = "SPY",
+        holding_days: int | None = None,
+        rating: str | None = None,
     ) -> str:
         """Single reflection call on the final trade decision with outcome context.
 
@@ -42,16 +61,29 @@ class Reflector:
         ``benchmark_name`` is the label used for the alpha line (e.g. ``"SPY"``
         for US tickers, ``"^N225"`` for ``.T`` listings); defaults to SPY for
         callers that haven't been updated to thread the benchmark through.
+
+        ``holding_days`` and ``rating`` are what let the model scope its claims:
+        without the window length it cannot tell a 1-day blip from a full week,
+        and without the rating it cannot read the long-only sign convention. Both
+        are optional so existing callers keep working, but omitting them means the
+        model reasons about a window it can't see.
         """
+        outcome_lines = []
+        if rating:
+            outcome_lines.append(f"Rating under review: {rating}")
+        if holding_days is not None:
+            unit = "trading day" if holding_days == 1 else "trading days"
+            outcome_lines.append(f"Observation window: {holding_days} {unit}")
+        outcome_lines.extend([
+            f"Raw return: {raw_return:+.1%}",
+            f"Alpha vs {benchmark_name}: {alpha_return:+.1%}",
+        ])
+
         messages = [
             ("system", self.log_reflection_prompt),
             (
                 "human",
-                (
-                    f"Raw return: {raw_return:+.1%}\n"
-                    f"Alpha vs {benchmark_name}: {alpha_return:+.1%}\n\n"
-                    f"Final Decision:\n{final_decision}"
-                ),
+                "\n".join(outcome_lines) + f"\n\nFinal Decision:\n{final_decision}",
             ),
         ]
         return self.quick_thinking_llm.invoke(messages).content

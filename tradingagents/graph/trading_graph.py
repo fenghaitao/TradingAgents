@@ -258,6 +258,12 @@ class TradingAgentsGraph:
         caller via ``_resolve_benchmark``). Returns ``(raw_return, alpha_return,
         actual_holding_days)`` or ``(None, None, None)`` if price data is
         unavailable (too recent, delisted, or network error).
+
+        A short window is not graded early. Resolution is one-way — once an entry
+        loses its ``pending`` tag it is never re-graded — so accepting a 1-day
+        return the day after a run would lock that verdict in permanently. The
+        full window is required while it can still arrive; ``None`` leaves the
+        entry pending for a later run.
         """
         from tradingagents.dataflows.symbol_utils import normalize_symbol
 
@@ -276,6 +282,13 @@ class TradingAgentsGraph:
                 return None, None, None
 
             actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
+            # A short window either hasn't elapsed yet (wait for it) or never
+            # will — a halt or delisting. ``end`` is the last calendar day the
+            # full window could have closed on; past it more bars are not coming,
+            # and a partial grade beats leaving the entry pending forever, since
+            # rotation never evicts pending entries.
+            if actual_days < holding_days and datetime.now() < end:
+                return None, None, None
             raw = float(
                 (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
                 / stock["Close"].iloc[0]
@@ -320,6 +333,10 @@ class TradingAgentsGraph:
                 raw_return=raw,
                 alpha_return=alpha,
                 benchmark_name=benchmark,
+                # Without these the model grades a window it can't see, and reads
+                # a long-only return as if the rating were always bullish.
+                holding_days=days,
+                rating=entry.get("rating"),
             )
             updates.append({
                 "ticker": ticker,

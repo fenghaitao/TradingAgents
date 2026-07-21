@@ -52,6 +52,62 @@ def get_current_date():
     return date.today().strftime("%Y-%m-%d")
 
 
+def guard_fundamentals_asof(
+    ticker: str,
+    canonical: str | None = None,
+    curr_date: str | None = None,
+) -> None:
+    """Refuse a live fundamentals snapshot when ``curr_date`` is materially past.
+
+    Vendor overview endpoints (yfinance ``.info``, Alpha Vantage ``OVERVIEW``)
+    return only a *current* snapshot — there is no as-of version to request.
+    Serving one for a historical ``curr_date`` silently injects look-ahead bias:
+    a 2024 run reads today's market cap and TTM revenue while the report claims
+    to speak "as of" the trade date. Statement-level calls dodge this by dropping
+    fiscal periods after ``curr_date``; the snapshot has no equivalent lever, so
+    refusing is the only correct answer rather than a stopgap for a missing feature.
+
+    Raises ``NoMarketDataError`` — the taxonomy's "no usable rows" case, which the
+    router converts into an explicit ``NO_DATA_AVAILABLE`` sentinel — so the agent
+    reports fundamentals as unavailable instead of quoting figures from the future.
+    Silent when ``curr_date`` is absent, unparseable, or within
+    ``fundamentals_max_staleness_days`` (None disables the guard entirely).
+    """
+    if not curr_date:
+        return
+
+    # Imported lazily: config imports default_config, and errors is a leaf
+    # module — keeping both out of this module's import-time graph avoids a
+    # cycle with the vendor modules that call this helper.
+    from .config import get_config
+    from .errors import NoMarketDataError
+
+    try:
+        asked = datetime.strptime(str(curr_date)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return  # Malformed dates are the caller's problem, not a staleness signal.
+
+    max_stale = get_config().get("fundamentals_max_staleness_days", 7)
+    if max_stale is None:
+        return
+
+    today = date.today()
+    age = (today - asked).days
+    if age <= max_stale:
+        return
+
+    raise NoMarketDataError(
+        ticker,
+        canonical,
+        f"fundamentals snapshot is live-only (as of {today.isoformat()}), but the "
+        f"requested date {asked.isoformat()} is {age} days earlier — beyond the "
+        f"fundamentals_max_staleness_days={max_stale} limit. Serving it would report "
+        f"present-day figures as historical ones. This vendor cannot provide "
+        f"point-in-time fundamentals; use the statement-level tools, which filter "
+        f"by fiscal period"
+    )
+
+
 def decorate_all_methods(decorator):
     def class_decorator(cls):
         for attr_name, attr_value in cls.__dict__.items():

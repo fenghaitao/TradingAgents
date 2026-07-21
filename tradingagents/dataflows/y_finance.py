@@ -13,6 +13,7 @@ from .stockstats_utils import (
     yf_retry,
 )
 from .symbol_utils import NoMarketDataError, normalize_symbol
+from .utils import guard_fundamentals_asof
 
 
 def get_YFin_data_online(
@@ -273,10 +274,21 @@ def get_stockstats_indicator(
 
 def get_fundamentals(
     ticker: Annotated[str, "ticker symbol of the company"],
-    curr_date: Annotated[str, "current date (not used for yfinance)"] = None
+    curr_date: Annotated[
+        str, "current date you are trading at, yyyy-mm-dd; rejected when historical"
+    ] = None
 ):
-    """Get company fundamentals overview from yfinance."""
+    """Get company fundamentals overview from yfinance.
+
+    ``.info`` is a live snapshot with no as-of parameter, so ``curr_date`` cannot
+    select a historical view — it can only decide whether serving today's numbers
+    is honest. ``guard_fundamentals_asof`` raises for a materially past date rather
+    than letting present-day figures be reported as historical ones.
+    """
     canonical = normalize_symbol(ticker)
+    # Raised before the network call: outside the try below, whose broad
+    # ``except Exception`` would otherwise turn the refusal into a plain string.
+    guard_fundamentals_asof(ticker, canonical, curr_date)
     try:
         ticker_obj = yf.Ticker(canonical)
         info = yf_retry(lambda: ticker_obj.info)

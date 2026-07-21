@@ -1,6 +1,7 @@
 import json
 
 from .alpha_vantage_common import _make_api_request
+from .utils import guard_fundamentals_asof
 
 
 def _filter_reports_by_date(result, curr_date: str):
@@ -31,13 +32,21 @@ def get_fundamentals(ticker: str, curr_date: str = None) -> str:
     """
     Retrieve comprehensive fundamental data for a given ticker symbol using Alpha Vantage.
 
+    ``OVERVIEW`` is a live snapshot with no as-of parameter, so ``curr_date`` cannot
+    select a historical view — it can only decide whether serving today's numbers is
+    honest. A materially past date raises instead, so present-day figures are never
+    reported as historical ones.
+
     Args:
         ticker (str): Ticker symbol of the company
-        curr_date (str): Current date you are trading at, yyyy-mm-dd (not used for Alpha Vantage)
+        curr_date (str): Current date you are trading at, yyyy-mm-dd
 
     Returns:
         str: Company overview data including financial ratios and key metrics
     """
+    # Before the request: a refused date shouldn't spend rate-limited API budget.
+    guard_fundamentals_asof(ticker, None, curr_date)
+
     params = {
         "symbol": ticker,
     }

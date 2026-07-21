@@ -17,6 +17,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
+    "TRADINGAGENTS_FUNDAMENTALS_MAX_STALENESS_DAYS": "fundamentals_max_staleness_days",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
     # Provider-specific reasoning/thinking knobs (None = each provider's own
@@ -103,6 +104,12 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,
+    # How far in the past a trade date may sit before the live fundamentals
+    # snapshot is refused. Vendor overview endpoints ("info"/"OVERVIEW") have
+    # no as-of parameter, so a historical run silently reads today's market cap
+    # and TTM revenue. Statement calls filter by fiscal period; the snapshot
+    # can't, so it is refused instead. Set to None to disable the guard.
+    "fundamentals_max_staleness_days": 7,
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "English",
