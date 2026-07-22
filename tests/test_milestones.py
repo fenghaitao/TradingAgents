@@ -221,6 +221,37 @@ def test_milestone_claim_whitespace_is_normalized():
 
 
 # ---------------------------------------------------------------------------
+# Price claims are steered out of the schema, not filtered after the fact
+# ---------------------------------------------------------------------------
+
+def test_schema_steers_the_model_off_price_level_claims():
+    """A live PM run emitted "reclaims the 117-118 zone" tagged ``quant``.
+
+    That is the drift milestones exist to prevent — price over the horizon is
+    already graded by the 5-day window — and it is also a routing hazard: the
+    evaluator keys off ``kind``, so a price claim tagged ``quant`` gets sent to
+    a fundamentals lookup that cannot answer it. Field descriptions *are* the
+    model's instructions, so the exclusion has to survive into the generated
+    JSON schema, which is what the provider actually sees.
+    """
+    schema = PortfolioDecision.model_json_schema()
+    milestone_props = schema["$defs"]["Milestone"]["properties"]
+
+    for text in (
+        schema["properties"]["milestones"]["description"],
+        milestone_props["claim"]["description"],
+        milestone_props["kind"]["description"],
+    ):
+        assert "price" in text.lower()
+
+    # The list-level description is what frames the whole section, so it must
+    # also rule out restating entry timing as a milestone.
+    assert "timing" in schema["properties"]["milestones"]["description"].lower()
+    # 'quant' must read as a company-reported figure, not any number at all.
+    assert "reports" in milestone_props["kind"]["description"].lower()
+
+
+# ---------------------------------------------------------------------------
 # Rating extraction must survive milestone claims
 # ---------------------------------------------------------------------------
 

@@ -192,7 +192,14 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
 
 
 class MilestoneKind(str, Enum):
-    """Whether a milestone can be checked against a number or only judged."""
+    """Whether a milestone is checked against a reported number or judged.
+
+    Both kinds describe something the *business* does. Neither covers a
+    share-price or chart level: price over the horizon is already graded by
+    the 5-day outcome window, and routing keys off this field, so a price
+    claim tagged ``quant`` would be sent to a fundamentals lookup that cannot
+    answer it.
+    """
 
     QUANT = "quant"
     QUAL = "qual"
@@ -212,7 +219,11 @@ class Milestone(BaseModel):
         description=(
             "A single, checkable prediction stated so a reader on the due date "
             "can decide plainly whether it happened. Name the specific metric, "
-            "event, or threshold. One sentence."
+            "event, or threshold. One sentence. State something the *business* "
+            "must do — a reported figure, a shipment, a customer win, a ruling. "
+            "Never a share-price or chart level ('reclaims the 50 SMA', 'holds "
+            "above $120'): price is graded separately by the 5-day window, and "
+            "a price milestone tests the market's mood rather than your thesis."
         ),
     )
     due_date: str = Field(
@@ -225,9 +236,11 @@ class Milestone(BaseModel):
     )
     kind: MilestoneKind = Field(
         description=(
-            "'quant' if the claim can be checked against a reported number "
-            "(revenue, margin, unit shipments); 'qual' if it needs judgement "
-            "(a product ships, a deal closes, a regulator rules)."
+            "'quant' if the claim can be checked against a number the company "
+            "itself reports (revenue, margin, free cash flow, unit shipments); "
+            "'qual' if it needs judgement (a product ships, a deal closes, a "
+            "regulator rules). Both are about the business — a share-price or "
+            "chart level is neither, and is not a milestone at all."
         ),
     )
 
@@ -290,7 +303,10 @@ class PortfolioDecision(BaseModel):
             "concrete things that must happen for it to be right, each with the "
             "date it can first be checked. Pick the claims the thesis actually "
             "leans on, not generic ones — if the thesis is wrong, these are what "
-            "will show it. Leave empty only when the thesis genuinely rests on no "
+            "will show it. Every one must be a business event or a reported "
+            "figure, never a share-price or chart level, and never a restatement "
+            "of entry timing — those are graded by the 5-day outcome window, not "
+            "here. Leave empty only when the thesis genuinely rests on no "
             "checkable prediction."
         ),
     )

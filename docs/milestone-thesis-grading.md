@@ -271,9 +271,33 @@ keeps it that way.
 - **The evaluator.** Until it is built, `milestone_grading_enabled` must stay off:
   an enabled resolver with a stub evaluator does nothing but expire real
   milestones once they pass grace.
-- **No live capture run yet.** `milestones` is the first `$ref`-to-object field in
-  any schema here (the enums already produced `$defs`, so `$ref` itself is not
-  new). A provider that rejects it degrades gracefully — `invoke_structured_or_freetext`
-  logs and falls back to free text — but it has not been observed against a real
-  provider. One real PM run, checking the emitted milestone lines, closes this.
+- ~~**No live capture run yet.**~~ **Closed.** INTC @ 2026-07-10 on openai/gpt-5.5
+  emitted three well-formed milestones with no structured-output fallback, so the
+  `$ref`-to-object field is accepted in practice. The same run confirmed the parser
+  fix (§5.3 — no section leakage, non-ASCII claim intact), the rotation keep-condition
+  (§5.4), and the orthogonality claim itself: the 5d tag resolved to
+  `-13.5% | -11.9% | 5d` while all three milestones stayed `pending`.
+
+  Two things the run exposed, both fixed in the schema descriptions rather than by
+  filtering after the fact:
+
+  - The PM tagged a *price/technical* claim ("reclaims the 117–118 zone") as `quant`.
+    Since the evaluator will route on `kind`, that sends a price claim to a
+    fundamentals lookup which cannot answer it. Adding a `price` kind was rejected —
+    it would legitimize the very drift milestones exist to prevent, and commit the
+    evaluator to duplicating what the 5-day window already grades. The `claim`,
+    `kind`, and `milestones` descriptions now rule out share-price and chart levels,
+    and `quant` reads as *a number the company reports*. Pinned by
+    `test_schema_steers_the_model_off_price_level_claims`, which asserts against the
+    generated JSON schema — the text the provider actually receives.
+  - That same milestone restated entry timing, which the 5d reflection already
+    covers. The list-level description now rules that out too.
+
+- **Entry reflection still manufactures a lesson on a correct call.** Observed in the
+  same run: on a call that was right (-11.9% alpha under `Underweight`), the
+  reflection nonetheless produced "do not press a bearish call without a clearly
+  broken support ... wait for the setup to confirm" — advice for a mistake attached
+  to a success, which then enters `past_context`. The prompt demands one concrete
+  lesson every time (`reflection.py`); letting it conclude "executed well, nothing to
+  change" would fix it. Not addressed here.
 ```
