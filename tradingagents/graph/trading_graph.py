@@ -29,6 +29,7 @@ from tradingagents.agents.utils.agent_utils import (
     resolve_instrument_identity,
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
+from tradingagents.agents.utils.milestones import has_pending, is_due
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -351,6 +352,101 @@ class TradingAgentsGraph:
         if updates:
             self.memory_log.batch_update_with_outcomes(updates)
 
+    def _evaluate_milestone(
+        self, entry: dict, milestone: dict, as_of: str,
+    ) -> str | None:
+        """Grade one due milestone. Returns ``hit``/``miss``/``partial``, or None.
+
+        **Stub.** Returns ``None`` (undetermined) for everything, which is why
+        ``milestone_grading_enabled`` defaults to off: with no real evaluator, an
+        enabled resolver would do nothing but eventually expire real milestones.
+
+        When this is built, the one thing it must not get wrong is the as-of
+        bound. Evidence has to be fetched as of ``as_of`` — the milestone's due
+        date — and never as of today, or the grade is made with information the
+        thesis could not have had, which is the same look-ahead leak the
+        fundamentals snapshot guard exists to prevent. Verify that
+        ``guard_fundamentals_asof`` accepts an arbitrary as-of date before
+        relying on it here.
+        """
+        return None
+
+    def _resolve_milestones(self, ticker: str) -> None:
+        """Grade due milestones on this ticker's past entries, at the start of a run.
+
+        Runs alongside ``_resolve_pending_entries`` but is deliberately not part
+        of it: milestones outlive the ``pending`` tag. They come due months after
+        an entry's 5-day window has closed, so this scans *every* same-ticker
+        entry that still holds an open milestone, whatever its tag says.
+
+        A milestone that cannot be graded is left pending and retried on the next
+        run. Only one that is still undetermined ``milestone_grace_days`` past its
+        due date is closed as ``expired`` — meaning "never confirmed within its
+        horizon", which is not the same as wrong.
+        """
+        if not self.config.get("milestone_grading_enabled"):
+            return
+
+        # Date, not datetime: comparing at day granularity keeps the expiry
+        # boundary from depending on what time of day the run happens.
+        today = datetime.now().date()
+        today_str = today.isoformat()
+        grace = timedelta(days=self.config.get("milestone_grace_days", 30))
+
+        for entry in self.memory_log.load_entries():
+            if entry["ticker"] != ticker:
+                continue
+            milestones = entry.get("milestones") or []
+            if not has_pending(milestones):
+                continue
+
+            try:
+                self._resolve_entry_milestones(
+                    ticker, entry, milestones, today, today_str, grace
+                )
+            except Exception as e:
+                # Thesis grading is supplementary; a failure here must never
+                # take down the run it is piggybacking on.
+                logger.warning(
+                    "Could not grade milestones for %s on %s (will retry next run): %s",
+                    ticker, entry["date"], e,
+                )
+
+    def _resolve_entry_milestones(
+        self, ticker, entry, milestones, today, today_str, grace,
+    ) -> None:
+        """Grade the due milestones of a single entry and write the result."""
+        status_by_claim = {}
+        for milestone in milestones:
+            if not is_due(milestone, today_str):
+                continue
+            verdict = self._evaluate_milestone(entry, milestone, milestone["due_date"])
+            if verdict in ("hit", "miss", "partial"):
+                status_by_claim[milestone["claim"]] = verdict
+            elif today > datetime.strptime(milestone["due_date"], "%Y-%m-%d").date() + grace:
+                status_by_claim[milestone["claim"]] = "expired"
+
+        if not status_by_claim:
+            return
+
+        # Apply the grades locally first so we can tell whether this write is the
+        # one that closes the last open milestone — the moment, and the only
+        # moment, the thesis becomes gradeable.
+        graded = [
+            {**m, "status": status_by_claim.get(m["claim"], m["status"])}
+            for m in milestones
+        ]
+        thesis_reflection = None
+        if not has_pending(graded) and not entry.get("thesis_reflection"):
+            thesis_reflection = self.reflector.reflect_on_thesis(
+                final_decision=entry.get("decision", ""),
+                milestone_results=graded,
+            )
+
+        self.memory_log.update_milestone_statuses(
+            ticker, entry["date"], status_by_claim, thesis_reflection=thesis_reflection,
+        )
+
     def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
         """Resolve ticker identity once and return the full instrument context.
 
@@ -407,6 +503,9 @@ class TradingAgentsGraph:
 
         # Resolve any pending memory-log entries for this ticker before the pipeline runs.
         self._resolve_pending_entries(company_name)
+        # Grade any milestones that have come due since the last run on this
+        # ticker, so the thesis reflection is in past_context before agents read it.
+        self._resolve_milestones(company_name)
 
         # Recompile with a checkpointer if the user opted in.
         if self.config.get("checkpoint_enabled"):

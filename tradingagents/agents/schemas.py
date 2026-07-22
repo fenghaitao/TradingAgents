@@ -18,10 +18,16 @@ so that:
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+from tradingagents.agents.utils.milestones import (
+    MILESTONE_SECTION_HEADER,
+    format_milestone_line,
+)
 
 # LLMs sometimes write a placeholder string ("None", "N/A", ...) into an optional
 # numeric field instead of omitting it. Coerce those to None so the structured
@@ -185,6 +191,62 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
 # ---------------------------------------------------------------------------
 
 
+class MilestoneKind(str, Enum):
+    """Whether a milestone can be checked against a number or only judged."""
+
+    QUANT = "quant"
+    QUAL = "qual"
+
+
+class Milestone(BaseModel):
+    """One checkable prediction the investment thesis depends on.
+
+    Milestones exist because the 5-trading-day outcome window grades *entry
+    timing*, never the multi-month thesis.  Recording the specific things the
+    thesis predicts — each with the date it can first be checked — lets the
+    thesis be graded later on whether those things actually happened, rather
+    than on a price move over a window too short to mean anything.
+    """
+
+    claim: str = Field(
+        description=(
+            "A single, checkable prediction stated so a reader on the due date "
+            "can decide plainly whether it happened. Name the specific metric, "
+            "event, or threshold. One sentence."
+        ),
+    )
+    due_date: str = Field(
+        description=(
+            "The earliest calendar date this claim can be checked, as an exact "
+            "YYYY-MM-DD date. Never a quarter or a phrase like 'Q3' or 'year "
+            "end' — resolve it yourself to a concrete date (e.g. the expected "
+            "earnings date, or the last day of the period)."
+        ),
+    )
+    kind: MilestoneKind = Field(
+        description=(
+            "'quant' if the claim can be checked against a reported number "
+            "(revenue, margin, unit shipments); 'qual' if it needs judgement "
+            "(a product ships, a deal closes, a regulator rules)."
+        ),
+    )
+
+    @field_validator("claim")
+    @classmethod
+    def _claim_not_blank(cls, v: str) -> str:
+        collapsed = " ".join(v.split())
+        if not collapsed:
+            raise ValueError("claim must not be blank")
+        return collapsed
+
+    @field_validator("due_date")
+    @classmethod
+    def _due_date_is_iso(cls, v: str) -> str:
+        stripped = v.strip()
+        datetime.strptime(stripped, "%Y-%m-%d")  # raises on anything else
+        return stripped
+
+
 class PortfolioDecision(BaseModel):
     """Structured output produced by the Portfolio Manager.
 
@@ -221,11 +283,43 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    milestones: list[Milestone] = Field(
+        default_factory=list,
+        description=(
+            "Two to four milestones that make this thesis falsifiable: the "
+            "concrete things that must happen for it to be right, each with the "
+            "date it can first be checked. Pick the claims the thesis actually "
+            "leans on, not generic ones — if the thesis is wrong, these are what "
+            "will show it. Leave empty only when the thesis genuinely rests on no "
+            "checkable prediction."
+        ),
+    )
 
     @field_validator("price_target", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
+
+    @field_validator("milestones", mode="before")
+    @classmethod
+    def _drop_malformed_milestones(cls, v):
+        """Discard individual malformed milestones instead of failing the decision.
+
+        Milestone capture is additive: a model that writes ``"Q3 2026"`` into
+        ``due_date`` should cost us that one milestone, not the entire portfolio
+        decision, which carries the rating the rest of the system depends on.
+        """
+        if not isinstance(v, list):
+            return v
+        kept = []
+        for item in v:
+            try:
+                kept.append(
+                    item if isinstance(item, Milestone) else Milestone.model_validate(item)
+                )
+            except (ValidationError, ValueError, TypeError):
+                continue
+        return kept
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:
@@ -247,6 +341,12 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         parts.extend(["", f"**Price Target**: {decision.price_target}"])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
+    if decision.milestones:
+        parts.extend(["", MILESTONE_SECTION_HEADER])
+        parts.extend(
+            format_milestone_line(m.claim, m.due_date, m.kind.value, "pending")
+            for m in decision.milestones
+        )
     return "\n".join(parts)
 
 

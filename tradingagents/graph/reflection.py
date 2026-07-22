@@ -10,6 +10,7 @@ class Reflector:
         """Initialize the reflector with an LLM."""
         self.quick_thinking_llm = quick_thinking_llm
         self.log_reflection_prompt = self._get_log_reflection_prompt()
+        self.thesis_reflection_prompt = self._get_thesis_reflection_prompt()
 
     def _get_log_reflection_prompt(self) -> str:
         """Concise prompt for reflect_on_final_decision (Phase B log entries).
@@ -44,6 +45,65 @@ class Reflector:
             "Be specific and terse. Your output will be stored verbatim in a decision log "
             "and re-read by future analysts, so every word must earn its place."
         )
+
+    def _get_thesis_reflection_prompt(self) -> str:
+        """Prompt for reflect_on_thesis — the counterpart to the entry reflection.
+
+        Scoped in the exact opposite direction to ``_get_log_reflection_prompt``.
+        That one refuses to judge the multi-month thesis because five trading
+        days cannot support a verdict; this one *does* judge it, because the
+        concrete claims the thesis rested on have now come due and been graded.
+
+        The ``expired`` status carries a distinction the model gets wrong if
+        unstated: a milestone that never resolved within its horizon is not the
+        same as one that resolved against the thesis. The prompt says so.
+        """
+        return (
+            "You are a trading analyst grading the investment thesis behind one of your own "
+            "past decisions. Its milestones — the concrete claims the thesis depended on — "
+            "have now come due and been graded.\n\n"
+            "Write exactly 2-4 sentences of plain prose (no bullets, no headers, no markdown).\n\n"
+            "Cover in order:\n"
+            "1. Did the thesis hold? Judge it against the milestone results, naming the "
+            "specific claims that carried or broke it.\n"
+            "2. If it failed, say whether the reasoning was wrong or the timing was — these "
+            "call for different corrections.\n"
+            "3. One concrete, transferable lesson about building a thesis to apply to the "
+            "next analysis.\n\n"
+            "Milestone statuses: 'hit' means the claim came true; 'miss' means it did not; "
+            "'partial' means it came true in part; 'expired' means it was never confirmed "
+            "within its horizon — which may mean the thesis was too slow rather than wrong. "
+            "Do not treat 'expired' as a miss.\n\n"
+            "Be specific and terse. Your output will be stored verbatim in a decision log "
+            "and re-read by future analysts, so every word must earn its place."
+        )
+
+    def reflect_on_thesis(
+        self,
+        final_decision: str,
+        milestone_results: list[dict],
+    ) -> str:
+        """Reflect on the multi-month thesis once its milestones have resolved.
+
+        ``milestone_results`` is the entry's graded milestone list — dicts with
+        ``claim``, ``due_date``, ``kind`` and ``status`` as parsed from the log's
+        ``MILESTONES:`` block.
+
+        This is a second, independent reflection: ``reflect_on_final_decision``
+        grades the entry over a handful of trading days, while this grades the
+        thesis over the months its milestones actually took to resolve.
+        """
+        lines = [
+            f"- [{m.get('status', 'pending')}] due {m.get('due_date', 'n/a')}: {m.get('claim', '')}"
+            for m in milestone_results
+        ]
+        outcome = "Milestone results:\n" + ("\n".join(lines) if lines else "- (none recorded)")
+
+        messages = [
+            ("system", self.thesis_reflection_prompt),
+            ("human", f"{outcome}\n\nOriginal Decision:\n{final_decision}"),
+        ]
+        return self.quick_thinking_llm.invoke(messages).content
 
     def reflect_on_final_decision(
         self,

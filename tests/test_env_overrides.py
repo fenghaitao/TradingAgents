@@ -68,6 +68,14 @@ def test_bool_coercion(monkeypatch, raw, expected):
     assert dc.DEFAULT_CONFIG["checkpoint_enabled"] is expected
 
 
+def test_milestone_grading_defaults_off_and_is_env_overridable(monkeypatch):
+    """Thesis grading stays off until the evaluator is wired (see docs/milestone-thesis-grading.md)."""
+    assert default_config_module.DEFAULT_CONFIG["milestone_grading_enabled"] is False
+
+    dc = _reload_with_env(monkeypatch, TRADINGAGENTS_MILESTONE_GRADING_ENABLED="true")
+    assert dc.DEFAULT_CONFIG["milestone_grading_enabled"] is True
+
+
 def test_reasoning_thinking_overrides(monkeypatch):
     """The provider reasoning/thinking knobs are env-configurable (non-interactive runs)."""
     dc = _reload_with_env(

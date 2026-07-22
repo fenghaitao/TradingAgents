@@ -16,6 +16,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
+    "TRADINGAGENTS_MILESTONE_GRADING_ENABLED": "milestone_grading_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_FUNDAMENTALS_MAX_STALENESS_DAYS": "fundamentals_max_staleness_days",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
@@ -104,6 +105,16 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,
+    # Milestone-based thesis grading. The Portfolio Manager always records its
+    # milestones; this flag only controls whether the resolver grades them on a
+    # later run. It stays off until the evaluator is wired: until then the
+    # evaluator returns "undetermined" for everything, and enabling the resolver
+    # would do nothing but eventually mark real milestones expired.
+    "milestone_grading_enabled": False,
+    # Days past a milestone's due date before an undetermined milestone is
+    # marked expired rather than left pending. Wide enough to absorb a delayed
+    # earnings date or a slipped product launch.
+    "milestone_grace_days": 30,
     # How far in the past a trade date may sit before the live fundamentals
     # snapshot is refused. Vendor overview endpoints ("info"/"OVERVIEW") have
     # no as-of parameter, so a historical run silently reads today's market cap
